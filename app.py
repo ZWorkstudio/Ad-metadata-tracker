@@ -4,13 +4,16 @@ import plotly.express as px
 import io
 import datetime
 
-# Optional packages (guarded)
+# Optional packages (graceful fallback if not installed)
+HAS_CIRCLE = False
+HAS_PDF = False
+
 try:
     import matplotlib.pyplot as plt
     import pycirclify
     HAS_CIRCLE = True
 except ImportError:
-    HAS_CIRCLE = False
+    pass
 
 try:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -19,7 +22,7 @@ try:
     from reportlab.lib import colors
     HAS_PDF = True
 except ImportError:
-    HAS_PDF = False
+    pass
 
 
 # ------------------ Sample Fake Dataset ------------------
