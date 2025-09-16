@@ -1,6 +1,6 @@
 # Ad Metadata Tracker - Streamlit Starter App
 # File: app.py
-# Purpose: JD-aligned project for "Data Entry Coordinator I (Ad Intel Analyst)"
+# Purpose: MAX-aligned project for "Data Base entry Management Tool I (Advertisement Documentation )"
 # Features:
 # - Manual entry + CSV upload
 # - Structured dataset with unique IDs & timestamps
@@ -351,8 +351,8 @@ else:
 # Footer / Next steps
 st.markdown("---")
 st.markdown("**Next steps (suggested for LinkedIn showcase):**\n\n"
-            "1. Deploy this app on Replit and take a clean screenshot of the dashboard.\n"
-            "2. Add a short README highlighting features that map to the job JD (traceability, deduplication, reporting).\n"
-            "3. Share link + 1-2 screenshots on LinkedIn with a clear caption: e.g., 'Built an Ad Metadata Tracker to mirror Nielsen's Ad Intel workflows — clean, traceable datasets for internal reporting.'")
+            "1. Deploying  this web app on streamlit live Protoype and take a clean screenshot of the dashboard.\n"
+            "2. Add a short README highlighting features that mapping (traceability, deduplication, reporting).\n"
+            "3. The link + 1LinkedIn with a clear caption: e.g., 'Built an Ad Metadata Tracker to manage Advertisements & Database MGMT Intelligent workflows — clean, traceable datasets for internal reporting.'")
 
-st.caption("Built with ❤️ for your Nielsen JD match — customize fields & visuals to match their exact schema.")
+st.caption("Built with ❤️ consistent matching of EXTRACTION OF META DATA & ANALYZATION REPORT DOCUMENTATION — customize fields & visuals to match their exact schema.")
