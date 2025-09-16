@@ -1,305 +1,227 @@
-# Advanced AdVision Tracker
-# Simulates broadcast monitoring, metadata entry, QA, shift-based reporting
-
 import streamlit as st
 import pandas as pd
-import uuid
-from datetime import datetime, time, timedelta
-import io
 import plotly.express as px
-import matplotlib.pyplot as plt
-import pycirclify
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from dateutil.parser import parse
+import io
+import datetime
 
-# Optional fuzzy matching
+# Optional packages (guarded)
 try:
-    from rapidfuzz import fuzz
-    RAPIDFUZZ = True
-except:
-    RAPIDFUZZ = False
+    import matplotlib.pyplot as plt
+    import pycirclify
+    HAS_CIRCLE = True
+except ImportError:
+    HAS_CIRCLE = False
 
-# Set page config
-st.set_page_config(page_title="AdVision Tracker", layout="wide", page_icon="📺")
+try:
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    HAS_PDF = True
+except ImportError:
+    HAS_PDF = False
 
-# ---------------------- Helper Functions ----------------------
-def create_unique_id():
-    return str(uuid.uuid4())
 
-def normalize_text(x):
-    return str(x).strip().lower() if pd.notna(x) else ""
+# ------------------ Sample Fake Dataset ------------------
+@st.cache_data
+def load_data():
+    data = {
+        "Channel": ["Channel A", "Channel B", "Channel A", "Channel C", "Channel B"],
+        "Ad Title": ["Summer Sale", "New Car Launch", "Summer Sale", "Tech Expo", "Fitness Promo"],
+        "Brand": ["BrandX", "BrandY", "BrandX", "BrandZ", "BrandY"],
+        "Product": ["Shoes", "Car", "Shoes", "Gadget", "Gym"],
+        "Duration": [30, 45, 30, 60, 20],
+        "Air Time": pd.date_range("2025-09-01", periods=5, freq="H"),
+    }
+    return pd.DataFrame(data)
 
-def parse_dates_safe(df, col="Air Time"):
-    if col in df.columns:
-        try:
-            df[col] = pd.to_datetime(df[col])
-        except:
-            df[col] = df[col].apply(lambda x: parse(str(x)) if pd.notna(x) else pd.NaT)
-    return df
 
-def add_audit_fields(df, source_label="manual"):
-    df = df.copy()
-    if "ad_id" not in df.columns:
-        df["ad_id"] = [create_unique_id() for _ in range(len(df))]
-    if "ingested_at" not in df.columns:
-        df["ingested_at"] = datetime.utcnow()
-    df["source"] = source_label
-    return df
+# ------------------ Main App ------------------
+st.set_page_config(page_title="AdVision Tracker", layout="wide")
+st.title("📺 AdVision Tracker")
+st.markdown("### A Metadata Tracking & Reporting Dashboard")
 
-def detect_duplicates(df, subset_keys=["Advertiser","Brand","Channel","Duration","Air Time"], fuzzy_threshold=0.9):
-    df = df.copy()
-    for k in subset_keys:
-        if k not in df.columns:
-            df[k] = ""
-    df["_key"] = df.apply(lambda r: "|".join([normalize_text(r[k]) for k in subset_keys]), axis=1)
-    
-    exact_dup = df.duplicated(subset=["_key"], keep=False)
-    fuzzy_dup = pd.Series([False]*len(df), index=df.index)
-    
-    if RAPIDFUZZ:
-        keys = df["_key"].tolist()
-        for i, key in enumerate(keys):
-            for j in range(i+1, len(keys)):
-                score = fuzz.ratio(key, keys[j])/100
-                if score >= fuzzy_threshold:
-                    fuzzy_dup.iat[i] = True
-                    fuzzy_dup.iat[j] = True
+df = load_data()
+
+# File Upload
+uploaded_file = st.file_uploader("Upload Advertisement Log (CSV/Excel)", type=["csv", "xlsx"])
+if uploaded_file:
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
     else:
-        import difflib
-        keys = df["_key"].tolist()
-        for i in range(len(keys)):
-            for j in range(i+1, len(keys)):
-                score = difflib.SequenceMatcher(None, keys[i], keys[j]).ratio()
-                if score >= fuzzy_threshold:
-                    fuzzy_dup.iat[i] = True
-                    fuzzy_dup.iat[j] = True
-    return exact_dup | fuzzy_dup
+        df = pd.read_excel(uploaded_file)
 
-def export_df_to_excel_bytes(cleaned, duplicates, summary):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        cleaned.to_excel(writer, index=False, sheet_name="Cleaned")
-        duplicates.to_excel(writer, index=False, sheet_name="Duplicates")
-        summary.to_excel(writer, index=False, sheet_name="Shift Report")
-    return buffer.getvalue()
+st.subheader("📊 Raw Advertisement Data")
+st.dataframe(df)
 
-def generate_creative_description(row):
-    return f"{row['Brand']} - {row['Product']} aired on {row['Channel']} for {row['Duration']} seconds."
+# ------------------ Data Cleaning ------------------
+st.header("🧹 Data Cleaning & Deduplication")
+df["Ad Title"] = df["Ad Title"].str.strip().str.title()
 
-def current_shift():
-    now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    if time(0,0) <= now_ist.time() <= time(9,0):
-        return "12am-9am IST"
-    return "Outside shift"
+from rapidfuzz import fuzz
+def is_duplicate(row, seen):
+    for s in seen:
+        if fuzz.ratio(row["Ad Title"], s) > 90:
+            return True
+    return False
 
-def export_pdf_report(cleaned, duplicates, summary):
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    styles = getSampleStyleSheet()
-    elements = []
+cleaned, dupes = [], []
+seen = []
+for _, row in df.iterrows():
+    if is_duplicate(row, seen):
+        dupes.append(row)
+    else:
+        cleaned.append(row)
+        seen.append(row["Ad Title"])
 
-    # Title
-    elements.append(Paragraph("AdVision Tracker - Shift Report", styles['Title']))
-    elements.append(Spacer(1, 12))
+cleaned = pd.DataFrame(cleaned)
+dupes = pd.DataFrame(dupes)
 
-    # KPIs
-    for _, row in summary.iterrows():
-        elements.append(Paragraph(f"<b>{row['Metric']}</b>: {row['Value']}", styles['Normal']))
-    elements.append(Spacer(1, 12))
+col1, col2 = st.columns(2)
+with col1:
+    st.write("✅ Cleaned Ads")
+    st.dataframe(cleaned)
+with col2:
+    st.write("⚠️ Duplicates Detected")
+    st.dataframe(dupes if not dupes.empty else pd.DataFrame({"Status": ["No duplicates found"]}))
 
-    # Cleaned Ads Table (first 10 rows)
-    if not cleaned.empty:
-        data = [cleaned.columns.tolist()] + cleaned.head(10).values.tolist()
-        table = Table(data)
-        table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.black)]))
-        elements.append(Paragraph("Cleaned Ads (Sample):", styles['Heading2']))
-        elements.append(table)
+# ------------------ Dashboard & KPIs ------------------
+st.header("📈 Advertisement Dashboard")
+
+# KPIs
+st.subheader("📌 Key Metrics")
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Ads", len(cleaned))
+col2.metric("Unique Brands", cleaned["Brand"].nunique())
+col3.metric("Total Air Time (mins)", cleaned["Duration"].sum())
+
+# Bar Chart
+fig1 = px.bar(cleaned, x="Brand", y="Duration", color="Product", title="Ad Duration by Brand")
+st.plotly_chart(fig1, use_container_width=True)
+
+# Pie Chart
+fig2 = px.pie(cleaned, names="Channel", title="Ad Distribution by Channel")
+st.plotly_chart(fig2, use_container_width=True)
+
+# Time Series
+fig3 = px.line(cleaned, x="Air Time", y="Duration", color="Brand", title="Ad Timeline")
+st.plotly_chart(fig3, use_container_width=True)
+
+# Circle Packing (if available)
+st.subheader("🔵 Circle Packing: Brands & Products")
+if HAS_CIRCLE and not cleaned.empty:
+    brand_groups = (
+        cleaned.groupby("Brand")["Product"]
+        .count()
+        .reset_index()
+        .rename(columns={"Product": "Count"})
+    )
+
+    circles = pycirclify.circlify(
+        brand_groups["Count"].tolist(),
+        show_enclosure=False,
+        target_enclosure=pycirclify.Circle(x=0, y=0, r=1),
+    )
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.axis("off")
+    for circle, (_, row) in zip(circles, brand_groups.iterrows()):
+        x, y, r = circle
+        ax.add_patch(plt.Circle((x, y), r, alpha=0.5, linewidth=2))
+        ax.text(x, y, row["Brand"], ha="center", va="center", fontsize=10)
+    st.pyplot(fig)
+elif not HAS_CIRCLE:
+    st.info("🔵 Circle chart not available (pycirclify not installed).")
+
+# ------------------ Export Reports ------------------
+st.header("📂 Export Reports")
+
+# Excel Export
+buffer = io.BytesIO()
+with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+    cleaned.to_excel(writer, index=False, sheet_name="Cleaned Ads")
+    if not dupes.empty:
+        dupes.to_excel(writer, index=False, sheet_name="Duplicates")
+    summary = pd.DataFrame({
+        "Metric": ["Total Ads", "Unique Brands", "Total Duration"],
+        "Value": [len(cleaned), cleaned['Brand'].nunique(), cleaned['Duration'].sum()]
+    })
+    summary.to_excel(writer, index=False, sheet_name="Summary")
+
+st.download_button(
+    "Download Excel Report",
+    buffer.getvalue(),
+    file_name="advision_report.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+# PDF Export (if available)
+if HAS_PDF:
+    def export_pdf_report(cleaned, duplicates, summary):
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        elements = []
+
+        elements.append(Paragraph("AdVision Tracker - Shift Report", styles['Title']))
         elements.append(Spacer(1, 12))
 
-    # Duplicates (if any)
-    if not duplicates.empty:
-        data = [duplicates.columns.tolist()] + duplicates.head(5).values.tolist()
-        table = Table(data)
-        table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.red)]))
-        elements.append(Paragraph("Duplicates (Sample):", styles['Heading2']))
-        elements.append(table)
+        for _, row in summary.iterrows():
+            elements.append(Paragraph(f"<b>{row['Metric']}</b>: {row['Value']}", styles['Normal']))
+        elements.append(Spacer(1, 12))
 
-    doc.build(elements)
-    pdf = buffer.getvalue()
-    buffer.close()
-    return pdf
+        if not cleaned.empty:
+            data = [cleaned.columns.tolist()] + cleaned.head(10).values.tolist()
+            table = Table(data)
+            table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.black)]))
+            elements.append(Paragraph("Cleaned Ads (Sample):", styles['Heading2']))
+            elements.append(table)
+            elements.append(Spacer(1, 12))
 
-# ---------------------- Streamlit UI ----------------------
-st.markdown("""
-<style>
-.kpi-card {background: linear-gradient(90deg,#00c6ff,#0072ff); color:white; padding:20px; border-radius:15px; text-align:center;}
-.header {font-size:36px; font-weight:bold; color:#0072ff; text-align:center;}
-</style>
-""", unsafe_allow_html=True)
+        if not duplicates.empty:
+            data = [duplicates.columns.tolist()] + duplicates.head(5).values.tolist()
+            table = Table(data)
+            table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.red)]))
+            elements.append(Paragraph("Duplicates (Sample):", styles['Heading2']))
+            elements.append(table)
 
-st.markdown('<div class="header">📺 AdVision Tracker</div>', unsafe_allow_html=True)
-st.write("Simulates monitoring, coding, and reporting of broadcast ads in a professional workflow environment.")
+        doc.build(elements)
+        pdf = buffer.getvalue()
+        buffer.close()
+        return pdf
 
-# Sidebar controls
-with st.sidebar:
-    st.header("Data Ingestion")
-    ingestion_mode = st.radio("Select mode", ("Upload Station Logs","Manual Entry","Load Example Logs"))
-    fuzzy_threshold = st.slider("Deduplication Threshold (%)", 70, 100, 90)
-    source_label = st.text_input("Source Label", "demo_station")
-    st.markdown("---")
-    st.header("Export Options")
-    st.write("Download cleaned dataset and reports")
+    summary = pd.DataFrame({
+        "Metric": ["Total Ads", "Unique Brands", "Total Duration"],
+        "Value": [len(cleaned), cleaned['Brand'].nunique(), cleaned['Duration'].sum()]
+    })
 
-# Session state
-if "ads_df" not in st.session_state: st.session_state.ads_df = pd.DataFrame()
-if "audit_log" not in st.session_state: st.session_state.audit_log = []
-
-# Data ingestion
-if ingestion_mode=="Upload Station Logs":
-    uploaded_file = st.file_uploader("Upload CSV/Excel", type=["csv","xlsx"])
-    if uploaded_file:
-        try:
-            df_new = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
-            df_new = parse_dates_safe(df_new, "Air Time")
-            df_new["Creative Description"] = df_new.apply(generate_creative_description, axis=1)
-            df_new = add_audit_fields(df_new, source_label)
-            st.session_state.ads_df = pd.concat([st.session_state.ads_df, df_new], ignore_index=True)
-            st.success(f"Loaded {len(df_new)} records from {uploaded_file.name}")
-            st.session_state.audit_log.append((datetime.utcnow(), f"Uploaded {uploaded_file.name}"))
-        except Exception as e:
-            st.error(f"Failed: {e}")
-elif ingestion_mode=="Manual Entry":
-    with st.form("manual_entry_form"):
-        cols = st.columns(3)
-        advertiser = cols[0].text_input("Advertiser")
-        brand = cols[1].text_input("Brand")
-        product = cols[2].text_input("Product")
-        cols2 = st.columns(3)
-        channel = cols2[0].selectbox("Channel", ["TV","Digital","OOH","Radio","Print","Social","Other"])
-        duration = cols2[1].number_input("Duration (seconds)", min_value=1, step=1)
-        air_time = cols2[2].time_input("Air Time", value=datetime.now().time())
-        submit = st.form_submit_button("Add Ad")
-        if submit:
-            new = pd.DataFrame([{"Advertiser":advertiser,"Brand":brand,"Product":product,"Channel":channel,"Duration":duration,"Air Time":datetime.combine(datetime.today(),air_time)}])
-            new["Creative Description"] = new.apply(generate_creative_description, axis=1)
-            new = add_audit_fields(new, source_label)
-            st.session_state.ads_df = pd.concat([st.session_state.ads_df,new], ignore_index=True)
-            st.success("Ad added")
-            st.session_state.audit_log.append((datetime.utcnow(), f"Manual entry: {brand}/{advertiser}"))
-else:
-    if st.button("Load Example Logs"):
-        df_example = pd.DataFrame([
-            {"Advertiser":"PepsiCo","Brand":"Pepsi","Product":"Soda","Channel":"TV","Duration":30,"Air Time":datetime(2025,8,15,1,0)},
-            {"Advertiser":"Coca-Cola","Brand":"Coca-Cola","Product":"Drink","Channel":"Digital","Duration":15,"Air Time":datetime(2025,8,15,2,30)},
-            {"Advertiser":"Nike","Brand":"Nike","Product":"Shoes","Channel":"OOH","Duration":10,"Air Time":datetime(2025,8,15,3,45)}
-        ])
-        df_example["Creative Description"] = df_example.apply(generate_creative_description, axis=1)
-        df_example = add_audit_fields(df_example, source_label)
-        st.session_state.ads_df = pd.concat([st.session_state.ads_df, df_example], ignore_index=True)
-        st.success("Example logs loaded")
-        st.session_state.audit_log.append((datetime.utcnow(), "Loaded example logs"))
-
-# ---------------------- Deduplication & Cleaning ----------------------
-if st.button("Run Deduplication & QA"):
-    df = st.session_state.ads_df.copy()
-    dup_mask = detect_duplicates(df, fuzzy_threshold=fuzzy_threshold/100)
-    df["Duplicate"] = dup_mask
-    df["Keep"] = ~dup_mask
-    cleaned = df[df["Keep"]].copy().reset_index(drop=True)
-    duplicates = df[df["Duplicate"]].copy().reset_index(drop=True)
-    summary = pd.DataFrame([{"Metric":"Total Ads","Value":len(df)},
-                            {"Metric":"Duplicates","Value":dup_mask.sum()},
-                            {"Metric":"Processed This Shift","Value":len(cleaned)},
-                            {"Metric":"Current Shift","Value":current_shift()}])
-    st.session_state.cleaned_df = cleaned
-    st.session_state.duplicates_df = duplicates
-    st.session_state.summary_df = summary
-    st.session_state.ads_df = df
-    st.success("Deduplication & QA complete")
-    st.session_state.audit_log.append((datetime.utcnow(), f"Deduplication run threshold={fuzzy_threshold}%"))
-
-# ---------------------- Dashboard ----------------------
-st.markdown("---")
-st.header("📊 Dashboard & Shift Report")
-
-if "ads_df" in st.session_state and not st.session_state.ads_df.empty:
-    df = st.session_state.ads_df.copy()
-    cleaned = st.session_state.get("cleaned_df", df)
-    duplicates = st.session_state.get("duplicates_df", pd.DataFrame())
-    summary = st.session_state.get("summary_df", pd.DataFrame())
-    
-    # KPI cards
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    kpi1.metric("Total Ads", len(df))
-    kpi2.metric("Processed This Shift", len(cleaned))
-    kpi3.metric("Duplicates", len(duplicates))
-    kpi4.metric("Current Shift", current_shift())
-    
-    # Charts
-    ch1, ch2 = st.columns([2,1])
-    with ch1:
-        by_channel = df.groupby("Channel")["ad_id"].count().reset_index().rename(columns={"ad_id":"Count"})
-        fig1 = px.bar(by_channel, x="Channel", y="Count", title="Ads by Channel", color="Count")
-        st.plotly_chart(fig1)
-        
-        by_brand = df.groupby("Brand")["ad_id"].count().reset_index().rename(columns={"ad_id":"Count"})
-        fig2 = px.pie(by_brand, names="Brand", values="Count", title="Ads by Brand")
-        st.plotly_chart(fig2)
-    
-    with ch2:
-        # Shift timeline
-        df["Hour"] = df["Air Time"].dt.hour
-        shift_count = df.groupby("Hour")["ad_id"].count().reset_index()
-        fig3 = px.line(shift_count, x="Hour", y="ad_id", title="Ads Processed per Hour", markers=True)
-        st.plotly_chart(fig3)
-
-    # Circle Packing Chart
-    st.subheader("🔵 Circle Packing: Brands & Products")
-    if not cleaned.empty:
-        brand_groups = (
-            cleaned.groupby("Brand")["Product"]
-            .count()
-            .reset_index()
-            .rename(columns={"Product": "Count"})
-        )
-        circles = pycirclify.circlify(
-            brand_groups["Count"].tolist(),
-            show_enclosure=False,
-            target_enclosure=pycirclify.Circle(x=0, y=0, r=1),
-        )
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.axis("off")
-        for circle, (_, row) in zip(circles, brand_groups.iterrows()):
-            x, y, r = circle
-            ax.add_patch(plt.Circle((x, y), r, alpha=0.5, linewidth=2))
-            ax.text(x, y, row["Brand"], ha="center", va="center", fontsize=10)
-        st.pyplot(fig)
-
-    # Show tables
-    st.subheader("Cleaned Ads")
-    st.dataframe(cleaned)
-    st.subheader("Duplicates / QA Flagged")
-    st.dataframe(duplicates)
-    
-    # Export
-    st.download_button("Download Full Shift Report (Excel)", 
-                       export_df_to_excel_bytes(cleaned, duplicates, summary),
-                       file_name="advision_shift_report.xlsx")
-    
     st.download_button(
         "Download PDF Report",
-        export_pdf_report(cleaned, duplicates, summary),
+        export_pdf_report(cleaned, dupes, summary),
         file_name="advision_shift_report.pdf",
         mime="application/pdf"
     )
-
-# ---------------------- Audit Log ----------------------
-st.markdown("---")
-st.subheader("📜 Audit Log")
-if st.session_state.audit_log:
-    st.table(pd.DataFrame(st.session_state.audit_log, columns=["Timestamp UTC","Action"]))
 else:
-    st.write("No actions yet.")
+    st.info("📄 PDF export not available (ReportLab not installed).")
+
+# ------------------ Role Simulation ------------------
+st.header("👩‍💻 Role Simulation - Data Entry")
+st.markdown("Try coding an ad as if you’re on the job:")
+
+with st.form("entry_form"):
+    ch = st.selectbox("Channel", df["Channel"].unique())
+    ad = st.text_input("Ad Title")
+    brand = st.text_input("Brand")
+    product = st.text_input("Product")
+    duration = st.number_input("Duration (sec)", 10, 180, 30)
+    submitted = st.form_submit_button("Submit Entry")
+
+if submitted:
+    st.success(f"Ad '{ad}' for {brand} coded successfully into database!")
+
+# ------------------ Shift Countdown ------------------
+st.header("⏰ Shift Countdown (Demo)")
+shift_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+shift_end = shift_start + datetime.timedelta(hours=9)
+time_left = shift_end - datetime.datetime.now()
+st.write(f"Shift ends in: **{time_left}**")
