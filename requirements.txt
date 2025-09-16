@@ -4,7 +4,4 @@ plotly
 openpyxl
 python-dateutil
 rapidfuzz
-kaleido
-reportlab
-pycirclify
 matplotlib
