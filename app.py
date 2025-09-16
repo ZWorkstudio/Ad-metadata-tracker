@@ -7,7 +7,12 @@ import uuid
 from datetime import datetime, time, timedelta
 import io
 import plotly.express as px
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+import pycirclify
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
 from dateutil.parser import parse
 
 # Optional fuzzy matching
@@ -89,6 +94,43 @@ def current_shift():
     if time(0,0) <= now_ist.time() <= time(9,0):
         return "12am-9am IST"
     return "Outside shift"
+
+def export_pdf_report(cleaned, duplicates, summary):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    # Title
+    elements.append(Paragraph("AdVision Tracker - Shift Report", styles['Title']))
+    elements.append(Spacer(1, 12))
+
+    # KPIs
+    for _, row in summary.iterrows():
+        elements.append(Paragraph(f"<b>{row['Metric']}</b>: {row['Value']}", styles['Normal']))
+    elements.append(Spacer(1, 12))
+
+    # Cleaned Ads Table (first 10 rows)
+    if not cleaned.empty:
+        data = [cleaned.columns.tolist()] + cleaned.head(10).values.tolist()
+        table = Table(data)
+        table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.black)]))
+        elements.append(Paragraph("Cleaned Ads (Sample):", styles['Heading2']))
+        elements.append(table)
+        elements.append(Spacer(1, 12))
+
+    # Duplicates (if any)
+    if not duplicates.empty:
+        data = [duplicates.columns.tolist()] + duplicates.head(5).values.tolist()
+        table = Table(data)
+        table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.red)]))
+        elements.append(Paragraph("Duplicates (Sample):", styles['Heading2']))
+        elements.append(table)
+
+    doc.build(elements)
+    pdf = buffer.getvalue()
+    buffer.close()
+    return pdf
 
 # ---------------------- Streamlit UI ----------------------
 st.markdown("""
@@ -187,6 +229,7 @@ if "ads_df" in st.session_state and not st.session_state.ads_df.empty:
     df = st.session_state.ads_df.copy()
     cleaned = st.session_state.get("cleaned_df", df)
     duplicates = st.session_state.get("duplicates_df", pd.DataFrame())
+    summary = st.session_state.get("summary_df", pd.DataFrame())
     
     # KPI cards
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -212,7 +255,29 @@ if "ads_df" in st.session_state and not st.session_state.ads_df.empty:
         shift_count = df.groupby("Hour")["ad_id"].count().reset_index()
         fig3 = px.line(shift_count, x="Hour", y="ad_id", title="Ads Processed per Hour", markers=True)
         st.plotly_chart(fig3)
-    
+
+    # Circle Packing Chart
+    st.subheader("🔵 Circle Packing: Brands & Products")
+    if not cleaned.empty:
+        brand_groups = (
+            cleaned.groupby("Brand")["Product"]
+            .count()
+            .reset_index()
+            .rename(columns={"Product": "Count"})
+        )
+        circles = pycirclify.circlify(
+            brand_groups["Count"].tolist(),
+            show_enclosure=False,
+            target_enclosure=pycirclify.Circle(x=0, y=0, r=1),
+        )
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.axis("off")
+        for circle, (_, row) in zip(circles, brand_groups.iterrows()):
+            x, y, r = circle
+            ax.add_patch(plt.Circle((x, y), r, alpha=0.5, linewidth=2))
+            ax.text(x, y, row["Brand"], ha="center", va="center", fontsize=10)
+        st.pyplot(fig)
+
     # Show tables
     st.subheader("Cleaned Ads")
     st.dataframe(cleaned)
@@ -223,6 +288,13 @@ if "ads_df" in st.session_state and not st.session_state.ads_df.empty:
     st.download_button("Download Full Shift Report (Excel)", 
                        export_df_to_excel_bytes(cleaned, duplicates, summary),
                        file_name="advision_shift_report.xlsx")
+    
+    st.download_button(
+        "Download PDF Report",
+        export_pdf_report(cleaned, duplicates, summary),
+        file_name="advision_shift_report.pdf",
+        mime="application/pdf"
+    )
 
 # ---------------------- Audit Log ----------------------
 st.markdown("---")
