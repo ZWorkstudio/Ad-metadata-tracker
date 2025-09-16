@@ -1,242 +1,144 @@
+# Ad Metadata Tracker - Streamlit Starter App
+# File: app.py
+# Purpose: JD-aligned project for "Data Entry Coordinator I (Ad Intel Analyst)"
+# Features:
+# - Manual entry + CSV upload
+# - Structured dataset with unique IDs & timestamps
+# - Deduplication (exact & fuzzy via difflib)
+# - Traceability (audit trail)
+# - Interactive dashboard (Plotly + Streamlit)
+# - Export cleaned dataset to CSV / Excel
+# - Search & filter
+# - Polished UI with animated header and processing feedback
+
+# Dependencies:
+# pip install streamlit pandas plotly openpyxl python-dateutil
+# (Optional but recommended for better fuzzy matching: pip install rapidfuzz)
+
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import uuid
+from datetime import datetime
 import io
-import datetime
+import plotly.express as px
+import plotly.graph_objects as go
+from dateutil.parser import parse
+import difflib
 
-# Optional packages (graceful fallback if not installed)
-HAS_CIRCLE = False
-HAS_PDF = False
-
+# Optional robust fuzzy matcher (faster / better) if available
 try:
-    import matplotlib.pyplot as plt
-    import pycirclify
-    HAS_CIRCLE = True
-except ImportError:
-    pass
-
-try:
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    HAS_PDF = True
-except ImportError:
-    pass
-
-
-# ------------------ Sample Fake Dataset ------------------
-@st.cache_data
-def load_data():
-    data = {
-        "Channel": ["Channel A", "Channel B", "Channel A", "Channel C", "Channel B"],
-        "Ad Title": ["Summer Sale", "New Car Launch", "Summer Sale", "Tech Expo", "Fitness Promo"],
-        "Brand": ["BrandX", "BrandY", "BrandX", "BrandZ", "BrandY"],
-        "Product": ["Shoes", "Car", "Shoes", "Gadget", "Gym"],
-        "Duration": [30, 45, 30, 60, 20],
-        "Air Time": pd.date_range("2025-09-01", periods=5, freq="H"),
-    }
-    return pd.DataFrame(data)
-
-
-# ------------------ Main App ------------------
-st.set_page_config(page_title="AdVision Tracker", layout="wide")
-st.title("📺 AdVision Tracker")
-st.markdown("### A Metadata Tracking & Reporting Dashboard")
-
-df = load_data()
-
-# File Upload
-uploaded_file = st.file_uploader("Upload Advertisement Log (CSV/Excel)", type=["csv", "xlsx"])
-if uploaded_file:
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
-
-st.subheader("📊 Raw Advertisement Data")
-st.dataframe(df)
-
-# ------------------ Data Cleaning ------------------
-st.header("🧹 Data Cleaning & Deduplication")
-
-# Normalize column names
-df.columns = df.columns.str.strip().str.title()
-
-required_cols = ["Ad Title", "Brand", "Product"]
-missing_cols = [col for col in required_cols if col not in df.columns]
-
-if missing_cols:
-    st.error(f"❌ Missing required columns in your file: {', '.join(missing_cols)}")
-else:
-    # Clean text columns safely
-    for col in required_cols:
-        df[col] = df[col].astype(str).str.strip().str.title()
-
     from rapidfuzz import fuzz
-    def is_duplicate(row, seen):
-        for s in seen:
-            if fuzz.ratio(row["Ad Title"], s) > 90:
-                return True
-        return False
+    RAPIDFUZZ = True
+except Exception:
+    RAPIDFUZZ = False
 
-    cleaned, dupes = [], []
-    seen = []
-    for _, row in df.iterrows():
-        if is_duplicate(row, seen):
-            dupes.append(row)
-        else:
-            cleaned.append(row)
-            seen.append(row["Ad Title"])
+# ---------------------- Helper functions ----------------------
 
-    cleaned = pd.DataFrame(cleaned)
-    dupes = pd.DataFrame(dupes)
+def create_unique_id():
+    return str(uuid.uuid4())
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("✅ Cleaned Ads")
-        st.dataframe(cleaned)
-    with col2:
-        st.write("⚠️ Duplicates Detected")
-        st.dataframe(dupes if not dupes.empty else pd.DataFrame({"Status": ["No duplicates found"]}))
 
-    # ------------------ Dashboard & KPIs ------------------
-    st.header("📈 Advertisement Dashboard")
+def normalize_text(x):
+    if pd.isna(x):
+        return ""
+    return str(x).strip().lower()
 
-    # KPIs
-    st.subheader("📌 Key Metrics")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Ads", len(cleaned))
-    col2.metric("Unique Brands", cleaned["Brand"].nunique())
-    col3.metric("Total Air Time (mins)", cleaned["Duration"].sum())
 
-    # Bar Chart
-    fig1 = px.bar(cleaned, x="Brand", y="Duration", color="Product", title="Ad Duration by Brand")
-    st.plotly_chart(fig1, use_container_width=True)
+def load_example_data():
+    # Small example dataset to showcase functionality
+    data = [
+        {"advertiser": "PepsiCo", "brand": "Pepsi", "channel": "TV", "format": "30s", "date": "2025-08-15", "spend": 250000},
+        {"advertiser": "PepsiCo", "brand": "Pepsi", "channel": "Digital", "format": "15s", "date": "2025-08-20", "spend": 120000},
+        {"advertiser": "Coca-Cola", "brand": "Coca-Cola", "channel": "TV", "format": "30s", "date": "2025-08-09", "spend": 300000},
+        {"advertiser": "Nike Inc.", "brand": "Nike", "channel": "OOH", "format": "Poster", "date": "2025-07-30", "spend": 50000},
+    ]
+    df = pd.DataFrame(data)
+    df["ad_id"] = [create_unique_id() for _ in range(len(df))]
+    df["ingested_at"] = datetime.utcnow()
+    return df
 
-    # Pie Chart
-    fig2 = px.pie(cleaned, names="Channel", title="Ad Distribution by Channel")
-    st.plotly_chart(fig2, use_container_width=True)
 
-    # Time Series
-    fig3 = px.line(cleaned, x="Air Time", y="Duration", color="Brand", title="Ad Timeline")
-    st.plotly_chart(fig3, use_container_width=True)
+def parse_dates_safe(df, col="date"):
+    if col in df.columns:
+        try:
+            df[col] = pd.to_datetime(df[col]).dt.date
+        except Exception:
+            # attempt parsing individually
+            df[col] = df[col].apply(lambda x: parse(str(x)).date() if pd.notna(x) else pd.NaT)
+    return df
 
-    # Circle Packing (if available)
-    st.subheader("🔵 Circle Packing: Brands & Products")
-    if HAS_CIRCLE and not cleaned.empty:
-        brand_groups = (
-            cleaned.groupby("Brand")["Product"]
-            .count()
-            .reset_index()
-            .rename(columns={"Product": "Count"})
-        )
 
-        circles = pycirclify.circlify(
-            brand_groups["Count"].tolist(),
-            show_enclosure=False,
-            target_enclosure=pycirclify.Circle(x=0, y=0, r=1),
-        )
+def detect_duplicates(df, subset_keys=["advertiser","brand","channel","format","date"], fuzzy_threshold=0.92):
+    """
+    Returns a boolean Series marking duplicates.
+    Strategy:
+    - Create a composite key of normalized text for exact dup detection.
+    - For fuzzy detection: compare pairs within same date or same advertiser to catch near-duplicates.
+    """
+    if df.empty:
+        return pd.Series([], dtype=bool)
 
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.axis("off")
-        for circle, (_, row) in zip(circles, brand_groups.iterrows()):
-            x, y, r = circle
-            ax.add_patch(plt.Circle((x, y), r, alpha=0.5, linewidth=2))
-            ax.text(x, y, row["Brand"], ha="center", va="center", fontsize=10)
-        st.pyplot(fig)
-    elif not HAS_CIRCLE:
-        st.info("🔵 Circle chart not available (pycirclify not installed).")
+    df = df.copy()
+    for k in subset_keys:
+        if k not in df.columns:
+            df[k] = ""
+    df["_key"] = df.apply(lambda r: "|".join([normalize_text(r[k]) for k in subset_keys]), axis=1)
 
-    # ------------------ Export Reports ------------------
-    st.header("📂 Export Reports")
+    # exact duplicates
+    exact_dup = df.duplicated(subset=["_key"], keep=False)
 
-    # Excel Export
+    # fuzzy duplicates
+    fuzzy_dup = pd.Series([False]*len(df), index=df.index)
+
+    if RAPIDFUZZ:
+        # use rapidfuzz for pairwise similarities (faster)
+        from rapidfuzz import process
+        keys = df["_key"].tolist()
+        for i, key in enumerate(keys):
+            # compare to later keys only for efficiency
+            for j in range(i+1, len(keys)):
+                score = fuzz.ratio(key, keys[j]) / 100.0
+                if score >= fuzzy_threshold:
+                    fuzzy_dup.iat[i] = True
+                    fuzzy_dup.iat[j] = True
+    else:
+        # difflib SequenceMatcher approach (slower but builtin)
+        keys = df["_key"].tolist()
+        for i in range(len(keys)):
+            for j in range(i+1, len(keys)):
+                score = difflib.SequenceMatcher(None, keys[i], keys[j]).ratio()
+                if score >= fuzzy_threshold:
+                    fuzzy_dup.iat[i] = True
+                    fuzzy_dup.iat[j] = True
+
+    combined = exact_dup | fuzzy_dup
+    return combined
+
+
+def add_audit_fields(df, source_label="manual"):
+    df = df.copy()
+    if "ad_id" not in df.columns:
+        df["ad_id"] = [create_unique_id() for _ in range(len(df))]
+    if "ingested_at" not in df.columns:
+        df["ingested_at"] = datetime.utcnow()
+    df["source"] = source_label
+    return df
+
+
+def export_df_to_excel_bytes(df):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        cleaned.to_excel(writer, index=False, sheet_name="Cleaned Ads")
-        if not dupes.empty:
-            dupes.to_excel(writer, index=False, sheet_name="Duplicates")
-        summary = pd.DataFrame({
-            "Metric": ["Total Ads", "Unique Brands", "Total Duration"],
-            "Value": [len(cleaned), cleaned['Brand'].nunique(), cleaned['Duration'].sum()]
-        })
-        summary.to_excel(writer, index=False, sheet_name="Summary")
+        df.to_excel(writer, index=False, sheet_name="ads")
+    return buffer.getvalue()
 
-    st.download_button(
-        "Download Excel Report",
-        buffer.getvalue(),
-        file_name="advision_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+# ---------------------- Streamlit UI ----------------------
 
-    # PDF Export (if available)
-    if HAS_PDF:
-        def export_pdf_report(cleaned, duplicates, summary):
-            buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=A4)
-            styles = getSampleStyleSheet()
-            elements = []
+st.set_page_config(page_title="Ad Metadata Tracker", layout="wide", page_icon="📊")
 
-            elements.append(Paragraph("AdVision Tracker - Shift Report", styles['Title']))
-            elements.append(Spacer(1, 12))
-
-            for _, row in summary.iterrows():
-                elements.append(Paragraph(f"<b>{row['Metric']}</b>: {row['Value']}", styles['Normal']))
-            elements.append(Spacer(1, 12))
-
-            if not cleaned.empty:
-                data = [cleaned.columns.tolist()] + cleaned.head(10).values.tolist()
-                table = Table(data)
-                table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.black)]))
-                elements.append(Paragraph("Cleaned Ads (Sample):", styles['Heading2']))
-                elements.append(table)
-                elements.append(Spacer(1, 12))
-
-            if not duplicates.empty:
-                data = [duplicates.columns.tolist()] + duplicates.head(5).values.tolist()
-                table = Table(data)
-                table.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.5, colors.red)]))
-                elements.append(Paragraph("Duplicates (Sample):", styles['Heading2']))
-                elements.append(table)
-
-            doc.build(elements)
-            pdf = buffer.getvalue()
-            buffer.close()
-            return pdf
-
-        summary = pd.DataFrame({
-            "Metric": ["Total Ads", "Unique Brands", "Total Duration"],
-            "Value": [len(cleaned), cleaned['Brand'].nunique(), cleaned['Duration'].sum()]
-        })
-
-        st.download_button(
-            "Download PDF Report",
-            export_pdf_report(cleaned, dupes, summary),
-            file_name="advision_shift_report.pdf",
-            mime="application/pdf"
-        )
-    else:
-        st.info("📄 PDF export not available (ReportLab not installed).")
-
-    # ------------------ Role Simulation ------------------
-    st.header("👩‍💻 Role Simulation - Data Entry")
-    st.markdown("Try coding an ad as if you’re on the job:")
-
-    with st.form("entry_form"):
-        ch = st.selectbox("Channel", df["Channel"].unique())
-        ad = st.text_input("Ad Title")
-        brand = st.text_input("Brand")
-        product = st.text_input("Product")
-        duration = st.number_input("Duration (sec)", 10, 180, 30)
-        submitted = st.form_submit_button("Submit Entry")
-
-    if submitted:
-        st.success(f"Ad '{ad}' for {brand} coded successfully into database!")
-
-    # ------------------ Shift Countdown ------------------
-    st.header("⏰ Shift Countdown (Demo)")
-    shift_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    shift_end = shift_start + datetime.timedelta(hours=9)
-    time_left = shift_end - datetime.datetime.now()
-    st.write(f"Shift ends in: **{time_left}**")
+# Animated header using CSS + simple emoji animation
+st.markdown("""
+<style>
+.header-anim {
+  font-size:32px;
+  font-weight:800;
+  background: linear-gradient(90d...
