@@ -3,9 +3,4 @@ pandas
 plotly
 openpyxl
 python-dateutil
-matplotlib
-pycirclify
-reportlab
 rapidfuzz
-
-
