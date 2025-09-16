@@ -1,5 +1,5 @@
-# Advanced Nielsen-Style Ad Metadata Tracker
-# Simulates Database Management workflow: A detailing and AD Telecast - broadcast monitoring, metadata entry, QA, shift-based reporting
+# Advanced AdVision Tracker
+# Simulates broadcast monitoring, metadata entry, QA, shift-based reporting
 
 import streamlit as st
 import pandas as pd
@@ -18,7 +18,7 @@ except:
     RAPIDFUZZ = False
 
 # Set page config
-st.set_page_config(page_title="Nielsen Ad Tracker", layout="wide", page_icon="📺")
+st.set_page_config(page_title="AdVision Tracker", layout="wide", page_icon="📺")
 
 # ---------------------- Helper Functions ----------------------
 def create_unique_id():
@@ -98,8 +98,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="header">📺 Nielsen Ad Metadata Tracker</div>', unsafe_allow_html=True)
-st.write("Simulates monitoring, coding, and reporting of broadcast ads exactly like Nielsen workflow.")
+st.markdown('<div class="header">📺 AdVision Tracker</div>', unsafe_allow_html=True)
+st.write("Simulates monitoring, coding, and reporting of broadcast ads in a professional workflow environment.")
 
 # Sidebar controls
 with st.sidebar:
@@ -179,7 +179,7 @@ if st.button("Run Deduplication & QA"):
     st.success("Deduplication & QA complete")
     st.session_state.audit_log.append((datetime.utcnow(), f"Deduplication run threshold={fuzzy_threshold}%"))
 
-# ---------------------- Nielsen-Style Dashboard ----------------------
+# ---------------------- Dashboard ----------------------
 st.markdown("---")
 st.header("📊 Dashboard & Shift Report")
 
@@ -222,7 +222,7 @@ if "ads_df" in st.session_state and not st.session_state.ads_df.empty:
     # Export
     st.download_button("Download Full Shift Report (Excel)", 
                        export_df_to_excel_bytes(cleaned, duplicates, summary),
-                       file_name="nielsen_shift_report.xlsx")
+                       file_name="advision_shift_report.xlsx")
 
 # ---------------------- Audit Log ----------------------
 st.markdown("---")
