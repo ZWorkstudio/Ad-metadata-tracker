@@ -157,7 +157,7 @@ st.markdown("""
 col1, col2 = st.columns([3,1])
 with col1:
     st.markdown('<div class="header-anim">Ad Metadata Tracker — Clean, Traceable, Reportable</div>', unsafe_allow_html=True)
-    st.write("""A JD-aligned project for Data Entry Coordinator / Ad Intel Analyst roles — upload ads, clean & dedupe records, track traceability, and create internal reports.""")
+    st.write("""MAX Database project for Data Entry Management - Advertisement Document Analysis — upload ads, documents clean & dedupe records, track traceability, and create internal reports.""")
 with col2:
     st.image("https://static.streamlit.io/examples/dice.jpg", width=120)
 
