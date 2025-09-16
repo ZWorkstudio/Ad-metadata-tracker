@@ -1,5 +1,14 @@
-# Ad Metadata Tracker - Advanced Recruiter-Ready Version
-# Features: Manual entry, CSV upload, dedup, traceability, dashboard, circle charts, PDF & Excel export
+# Ad Metadata Tracker - Streamlit Starter App
+# Purpose: JD-aligned project for "Data Entry Coordinator I (Ad Intel Analyst)"
+# Features:
+# - Manual entry + CSV upload
+# - Structured dataset with unique IDs & timestamps
+# - Deduplication (exact & fuzzy via difflib/rapidfuzz)
+# - Traceability (audit trail)
+# - Interactive dashboard (Plotly + Streamlit)
+# - Export cleaned dataset to CSV / Excel
+# - Search & filter
+# - Polished UI with animated header and processing feedback
 
 import streamlit as st
 import pandas as pd
@@ -7,28 +16,10 @@ import uuid
 from datetime import datetime
 import io
 import plotly.express as px
-import matplotlib.pyplot as plt
 import difflib
 from dateutil.parser import parse
 
-# Optional packages
-HAS_CIRCLE = False
-HAS_PDF = False
-try:
-    import pycirclify
-    HAS_CIRCLE = True
-except ImportError:
-    pass
-
-try:
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    HAS_PDF = True
-except ImportError:
-    pass
-
+# Optional robust fuzzy matcher (faster / better)
 try:
     from rapidfuzz import fuzz
     RAPIDFUZZ = True
@@ -46,6 +37,7 @@ def normalize_text(x):
     return str(x).strip().lower()
 
 def load_example_data():
+    # Example dataset
     data = [
         {"advertiser": "PepsiCo", "brand": "Pepsi", "channel": "TV", "format": "30s", "date": "2025-08-15", "spend": 250000},
         {"advertiser": "PepsiCo", "brand": "Pepsi", "channel": "Digital", "format": "15s", "date": "2025-08-20", "spend": 120000},
@@ -78,6 +70,7 @@ def detect_duplicates(df, subset_keys=["advertiser","brand","channel","format","
     fuzzy_dup = pd.Series([False]*len(df), index=df.index)
     keys = df["_key"].tolist()
     if RAPIDFUZZ:
+        from rapidfuzz import fuzz
         for i, key in enumerate(keys):
             for j in range(i+1, len(keys)):
                 score = fuzz.ratio(key, keys[j])/100
@@ -108,36 +101,8 @@ def export_df_to_excel_bytes(df):
         df.to_excel(writer, index=False, sheet_name="ads")
     return buffer.getvalue()
 
-def export_pdf_report(cleaned, duplicates):
-    if not HAS_PDF:
-        return None
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    styles = getSampleStyleSheet()
-    elements = []
-    elements.append(Paragraph("Ad Metadata Tracker - Report", styles['Title']))
-    elements.append(Spacer(1,12))
-    # Cleaned Ads
-    if not cleaned.empty:
-        data = [cleaned.columns.tolist()] + cleaned.head(10).values.tolist()
-        table = Table(data)
-        table.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.black)]))
-        elements.append(Paragraph("Cleaned Ads (Sample):", styles['Heading2']))
-        elements.append(table)
-        elements.append(Spacer(1,12))
-    # Duplicates
-    if not duplicates.empty:
-        data = [duplicates.columns.tolist()] + duplicates.head(5).values.tolist()
-        table = Table(data)
-        table.setStyle(TableStyle([("GRID",(0,0),(-1,-1),0.5,colors.red)]))
-        elements.append(Paragraph("Duplicates (Sample):", styles['Heading2']))
-        elements.append(table)
-    doc.build(elements)
-    pdf = buffer.getvalue()
-    buffer.close()
-    return pdf
-
 # ---------------------- Streamlit UI ----------------------
+
 st.set_page_config(page_title="Ad Metadata Tracker", layout="wide", page_icon="📊")
 st.markdown("<h1 style='text-align:center; color:#4CAF50;'>📊 Ad Metadata Tracker</h1>", unsafe_allow_html=True)
 
@@ -151,21 +116,25 @@ if uploaded_file:
 else:
     df = load_example_data()
 
+st.subheader("Raw Advertisement Data")
+st.dataframe(df)
+
 # ---------------------- Column Handling ----------------------
-required_cols = ["advertiser","brand","channel","format","date","spend"]
+required_cols = ["advertiser","brand","channel","format","date"]
 for col in required_cols:
     if col not in df.columns:
         st.warning(f"Column '{col}' missing. Auto-creating placeholder.")
-        df[col] = "" if col != "spend" else 0
+        df[col] = ""
 
+# Normalize text columns
 for col in required_cols:
-    if col != "date":
-        df[col] = df[col].astype(str).str.strip().str.title()
+    df[col] = df[col].astype(str).str.strip().str.title()
+
 df = parse_dates_safe(df, "date")
 df = add_audit_fields(df, source_label="uploaded" if uploaded_file else "example")
 
 # ---------------------- Deduplication ----------------------
-df["is_duplicate"] = detect_duplicates(df, subset_keys=required_cols[:-1])  # exclude spend
+df["is_duplicate"] = detect_duplicates(df, subset_keys=required_cols)
 
 cleaned = df[~df["is_duplicate"]].copy()
 dupes = df[df["is_duplicate"]].copy()
@@ -179,39 +148,19 @@ st.dataframe(dupes if not dupes.empty else pd.DataFrame({"Status":["No duplicate
 st.header("Advertisement Dashboard")
 st.metric("Total Ads", len(cleaned))
 st.metric("Unique Brands", cleaned["brand"].nunique())
-st.metric("Total Spend", cleaned["spend"].sum())
+st.metric("Total Ads Spend", cleaned["spend"].sum() if "spend" in cleaned.columns else 0)
 
-# Bar chart
-fig_bar = px.bar(cleaned, x="brand", y="spend", color="channel", title="Ad Spend by Brand & Channel")
-st.plotly_chart(fig_bar, use_container_width=True)
-
-# Circle Packing Chart
-st.subheader("Circle Packing: Brands & Products")
-if HAS_CIRCLE and not cleaned.empty:
-    grp = cleaned.groupby("brand")["format"].count().reset_index().rename(columns={"format":"count"})
-    circles = pycirclify.circlify(grp["count"].tolist(), show_enclosure=False, target_enclosure=pycirclify.Circle(x=0,y=0,r=1))
-    fig, ax = plt.subplots(figsize=(6,6))
-    ax.axis("off")
-    for circle, (_, row) in zip(circles, grp.iterrows()):
-        x, y, r = circle
-        ax.add_patch(plt.Circle((x,y),r,alpha=0.5,linewidth=2))
-        ax.text(x, y, row["brand"], ha="center", va="center", fontsize=10)
-    st.pyplot(fig)
-elif not HAS_CIRCLE:
-    st.info("Circle Packing Chart not available (pycirclify not installed)")
+# Bar chart: spend by brand
+if "spend" in cleaned.columns:
+    fig = px.bar(cleaned, x="brand", y="spend", color="channel", title="Ad Spend by Brand & Channel")
+    st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------- Export ----------------------
 excel_bytes = export_df_to_excel_bytes(cleaned)
 st.download_button("Download Cleaned Ads as Excel", excel_bytes, file_name="cleaned_ads.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-if HAS_PDF:
-    pdf_bytes = export_pdf_report(cleaned, dupes)
-    st.download_button("Download PDF Report", pdf_bytes, file_name="ad_metadata_report.pdf", mime="application/pdf")
-else:
-    st.info("PDF export not available (reportlab not installed)")
-
 # ---------------------- Role Simulation ----------------------
-st.header("Role Simulation: Manual Entry")
+st.header("Role Simulation")
 with st.form("manual_entry"):
     advertiser = st.text_input("Advertiser")
     brand = st.text_input("Brand")
